@@ -111,7 +111,7 @@ env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	pg_subnet=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_subnet_id 2>/dev/null); \
 	pg_zone=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_private_dns_zone_id 2>/dev/null); \
 	pe_subnet=$$(cd $(FOUNDATION) && terraform output -raw private_endpoints_subnet_id 2>/dev/null); \
-	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.cache.windows.net"] // empty'); \
+	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.azure.net"] // empty'); \
 	rg=$$(echo "$$pg_subnet" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
 	for v in location pg_subnet pg_zone pe_subnet redis_zone rg; do \
 		eval "val=\$$$$v"; \

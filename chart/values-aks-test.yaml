@@ -10,4 +10,4 @@ environmentConfig:
   postgresSubnetId: /subscriptions/9654d8ca-c09a-4cb2-a843-2d5a7fc6a4cd/resourceGroups/aks-test-rg/providers/Microsoft.Network/virtualNetworks/aks-vnet/subnets/postgres-flexibleserver-subnet
   postgresZoneId: /subscriptions/9654d8ca-c09a-4cb2-a843-2d5a7fc6a4cd/resourceGroups/aks-test-rg/providers/Microsoft.Network/privateDnsZones/privatelink.postgres.database.azure.com
   peSubnetId: /subscriptions/9654d8ca-c09a-4cb2-a843-2d5a7fc6a4cd/resourceGroups/aks-test-rg/providers/Microsoft.Network/virtualNetworks/aks-vnet/subnets/private-endpoints-subnet
-  redisZoneId: /subscriptions/9654d8ca-c09a-4cb2-a843-2d5a7fc6a4cd/resourceGroups/aks-test-rg/providers/Microsoft.Network/privateDnsZones/privatelink.redis.cache.windows.net
+  redisZoneId: /subscriptions/9654d8ca-c09a-4cb2-a843-2d5a7fc6a4cd/resourceGroups/aks-test-rg/providers/Microsoft.Network/privateDnsZones/privatelink.redis.azure.net

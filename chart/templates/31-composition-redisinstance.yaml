@@ -1,17 +1,39 @@
 {{- /*
-RedisInstance -> Azure Cache for Redis, reachable only through a private endpoint.
+RedisInstance -> Azure Managed Redis, reachable only through a private endpoint.
 
-Unlike Flexible Server, Redis cannot be VNet-injected on Standard tier, so privacy is built
-from two resources: the cache with public access off, plus a PrivateEndpoint in the
-private-endpoints subnet with a zone group registering it in privatelink.redis.cache.windows.net.
+## Why Managed Redis and not Azure Cache for Redis
 
-Both resources are VERIFIED against the live CRDs on aks-test (2026-07-16):
-  - RedisCache      cache.azure.m.upbound.io/v1beta1
-  - PrivateEndpoint network.azure.m.upbound.io/v1beta1
+Azure Cache for Redis (Microsoft.Cache/redis) is retired. It does not fail slowly or degrade —
+the control plane rejects creation outright:
 
-provider-azure-network is now installable because Safe Start is in force: the wildcard
-activation policy is gone, so it registers ONE CRD (privateendpoints) instead of ~238 and no
-longer takes the Free-tier API server offline.
+  create failed: async create failed: ... performing RedisCreate: unexpected status 400
+  (400 Bad Request) with error: BadRequest: Azure Cache for Redis is retiring, create Azure
+  Managed Redis instance instead. Learn more: https://aka.ms/AzureCacheForRedisRetirement
+
+No chart change to the old kind can fix that, so this Composition targets Azure Managed Redis
+(Microsoft.Cache/redisEnterprise) via the provider's ManagedRedis kind. ADR-0019 records the
+decision. The two products differ in every dimension this file touches — kind, SKU grammar,
+private-link subresource, DNS zone, and port — so none of the old values carried over.
+
+## Privacy
+
+Managed Redis cannot be VNet-injected at all (unlike Flexible Server, and unlike the Premium
+tier of the old service), so a private endpoint is the ONLY private path. Privacy is built from
+two resources: the instance with public access off, plus a PrivateEndpoint in the
+private-endpoints subnet whose zone group registers it in privatelink.redis.azure.net.
+
+That zone name is load-bearing and is NOT the old privatelink.redis.cache.windows.net:
+
+  Azure Managed Redis  (Microsoft.Cache/redisEnterprise)  redisEnterprise  privatelink.redis.azure.net
+  Azure Cache for Redis (Microsoft.Cache/redis, retired)  redisCache       privatelink.redis.cache.windows.net
+
+Both the subresource name and the zone must match the service. A zone group pointed at the
+wrong zone still applies cleanly and still resolves to nothing, so this is a silent failure
+mode, not a loud one. plat-eng-aks-foundation owns the zone and exports its id.
+
+All fields below are VERIFIED against the live CRDs on aks-test (2026-07-16):
+  - ManagedRedis     cache.azure.m.upbound.io/v1beta1
+  - PrivateEndpoint  network.azure.m.upbound.io/v1beta1
 
 ## How the app gets its credentials
 
@@ -21,9 +43,8 @@ secrets land in the XR's namespace:
 
   <name>-redis-conn  host, port  (composed below; engine in the name so it cannot collide
                      with a same-named PostgresInstance's secret)
-  <name>-auth   the cache's own connection details, written by the provider: the access key
-                is sensitive, so upjet publishes it and this chart never handles it. Exact key
-                names are upjet's (`attribute.*`) and are unverified until a cache exists.
+  <name>-auth   the instance's own connection details, written by the provider: the access key
+                is sensitive, so upjet publishes it and this chart never handles it.
 */ -}}
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -32,7 +53,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "3"
   labels:
-    engine: azure-redis
+    engine: azure-managed-redis
 spec:
   compositeTypeRef:
     apiVersion: {{ .Values.xrds.group }}/{{ .Values.xrds.version }}
@@ -57,24 +78,32 @@ spec:
       apiVersion: pt.fn.crossplane.io/v1beta1
       kind: Resources
       resources:
-      - name: rediscache
+      - name: managedredis
         base:
           apiVersion: cache.azure.m.upbound.io/v1beta1
-          kind: RedisCache
+          kind: ManagedRedis
           spec:
             providerConfigRef:
               kind: ClusterProviderConfig
               name: {{ .Values.providerConfig.name }}
             forProvider:
-              family: {{ .Values.redis.family }}
-              skuName: {{ .Values.redis.skuName }}
-              capacity: {{ .Values.redis.capacity }}
-              # Quoted deliberately: an unquoted 6 becomes an int and the provider rejects it.
-              redisVersion: {{ .Values.redis.redisVersion | quote }}
-              # Private-only. The XR has no field that can flip either of these.
-              publicNetworkAccessEnabled: false
-              nonSslPortEnabled: false
-              minimumTlsVersion: "1.2"
+              # Private-only. The XR has no field that can flip this. Note the grammar differs
+              # from the old kind: a string Enabled/Disabled, not a publicNetworkAccessEnabled
+              # boolean.
+              publicNetworkAccess: Disabled
+              highAvailabilityEnabled: {{ .Values.redis.highAvailabilityEnabled }}
+              # "A Managed Redis instance will not be functional without a database" — the block
+              # is optional in the schema but not in practice, so it is always set here.
+              defaultDatabase:
+                # TLS only. The plaintext alternative is never offered.
+                clientProtocol: Encrypted
+                clusteringPolicy: {{ .Values.redis.clusteringPolicy }}
+                evictionPolicy: {{ .Values.redis.evictionPolicy }}
+                # Azure defaults this to FALSE (Managed Redis prefers Entra ID auth). Left at
+                # the default there would be no access key at all, and the <name>-auth secret
+                # this platform promises its consumers would come up empty. Set explicitly so
+                # the contract holds. ADR-0019 records Entra ID as the follow-up.
+                accessKeysAuthenticationEnabled: true
         patches:
         # Location and resource group are environment facts. The private endpoint below must
         # land in the VNet's region, so a hardcoded region breaks the private path entirely.
@@ -84,18 +113,16 @@ spec:
         - type: FromEnvironmentFieldPath
           fromFieldPath: resourceGroupName
           toFieldPath: spec.forProvider.resourceGroupName
-        - type: FromCompositeFieldPath
-          fromFieldPath: spec.version
-          toFieldPath: spec.forProvider.redisVersion
+        # Managed Redis folds tier and capacity into ONE sku name (Balanced_B0), where the old
+        # service took family + skuName + capacity as three fields. The size ladder lives in
+        # values.yaml so the platform can retune it without touching this pipeline.
         - type: FromCompositeFieldPath
           fromFieldPath: spec.size
-          toFieldPath: spec.forProvider.capacity
+          toFieldPath: spec.forProvider.skuName
           transforms:
           - type: map
             map:
-              small: 1
-              medium: 2
-              large: 3
+{{ toYaml .Values.redis.sizes | indent 14 }}
         # The access key is sensitive, so the provider publishes it to this secret. Named
         # after the XR; namespace-local, like every namespaced MR's secret ref.
         - type: FromCompositeFieldPath
@@ -109,10 +136,13 @@ spec:
         - type: ToCompositeFieldPath
           fromFieldPath: status.atProvider.hostname
           toFieldPath: status.hostname
+        # The port lives on the database, not the instance. Managed Redis serves TLS on 10000,
+        # not the old service's 6380 — which is why the XR reports whatever Azure says rather
+        # than a constant baked into this chart.
         - type: ToCompositeFieldPath
-          fromFieldPath: status.atProvider.sslPort
-          toFieldPath: status.sslPort
-        # Hop 1 of 2: surface the cache's Azure id on the XR so the PrivateEndpoint below can
+          fromFieldPath: status.atProvider.defaultDatabase.port
+          toFieldPath: status.port
+        # Hop 1 of 2: surface the instance's Azure id on the XR so the PrivateEndpoint below can
         # read it. patch-and-transform cannot patch directly between composed resources.
         - type: ToCompositeFieldPath
           fromFieldPath: status.atProvider.id
@@ -134,8 +164,10 @@ spec:
               privateServiceConnection:
                 name: redis
                 isManualConnection: false
+                # Managed Redis is redisEnterprise. The old service's redisCache subresource
+                # does not exist on this resource type and the link would never approve.
                 subresourceNames:
-                - redisCache
+                - redisEnterprise
               privateDnsZoneGroup:
                 name: redis
         patches:
@@ -148,11 +180,12 @@ spec:
         - type: FromEnvironmentFieldPath
           fromFieldPath: peSubnetId
           toFieldPath: spec.forProvider.subnetId
+        # privatelink.redis.azure.net, exported by the foundation. See the header.
         - type: FromEnvironmentFieldPath
           fromFieldPath: redisZoneId
           toFieldPath: spec.forProvider.privateDnsZoneGroup.privateDnsZoneIds[0]
-        # Hop 2 of 2: bind the endpoint to the cache created above. Required, so the endpoint
-        # is skipped until the cache's id exists — it renders on the second reconcile.
+        # Hop 2 of 2: bind the endpoint to the instance created above. Required, so the endpoint
+        # is skipped until the instance's id exists — it renders on the second reconcile.
         - type: FromCompositeFieldPath
           fromFieldPath: status.cacheId
           toFieldPath: spec.forProvider.privateServiceConnection.privateConnectionResourceId
@@ -184,7 +217,7 @@ spec:
           policy:
             fromFieldPath: Required
         - type: FromCompositeFieldPath
-          fromFieldPath: status.sslPort
+          fromFieldPath: status.port
           toFieldPath: stringData.port
           policy:
             fromFieldPath: Required

@@ -1,9 +1,12 @@
-# Same XR as redisinstance.yaml, but with the status a real cache would report.
+# Same XR as redisinstance.yaml, but with the status a real instance would report.
 #
 # This is the one that renders the PrivateEndpoint: it is gated `Required` on status.cacheId,
 # so it never appears on a first-pass render. Without this file the PE base is never checked
 # against a CRD — which is how it shipped with `privateServiceConnection` as a list when the
 # CRD wants an object.
+#
+# The hostname and port are Azure Managed Redis shaped: the <name>.<region>.redis.azure.net
+# suffix and port 10000, not the retired service's *.redis.cache.windows.net on 6380.
 #
 # Values are representative, not real; nothing here is applied.
 apiVersion: platform.myorg.io/v1alpha1
@@ -13,8 +16,7 @@ metadata:
   namespace: team-orders
 spec:
   size: small
-  version: "6"
 status:
-  hostname: orders-cache-example.privatelink.redis.cache.windows.net
-  sslPort: 6380
-  cacheId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/aks-test-rg/providers/Microsoft.Cache/redis/orders-cache-example
+  hostname: orders-cache-example.westus2.redis.azure.net
+  port: 10000
+  cacheId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/aks-test-rg/providers/Microsoft.Cache/redisEnterprise/orders-cache-example
