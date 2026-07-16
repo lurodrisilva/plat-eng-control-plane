@@ -46,10 +46,21 @@ functions:
 activationPolicy:
   enabled: true
   name: platform-azure
+  # Always activated: the SQL API is on.
   activate:
   - flexibleservers.dbforpostgresql.azure.m.upbound.io
   - flexibleserverdatabases.dbforpostgresql.azure.m.upbound.io
-  - rediscaches.cache.azure.m.upbound.io
+  # Activated only when redis.enabled. Both exist solely to serve RedisInstance, so a disabled
+  # cache API should not register their CRDs.
+  #
+  # This is `managedredis`, NOT `rediscaches`. Activating the retired kind registers a CRD for a
+  # resource Azure can never create, and leaves the kind the Composition actually composes
+  # Inactive — so the XR fails with `no matches for kind ManagedRedis`. That this went unnoticed
+  # is instructive: every cache MRD is currently Active on aks-test as a *leftover* from the
+  # wildcard-MRAP era (MRD state survives deleting the policy), so ManagedRedis resolved by
+  # accident. On a cluster built correctly from the start it would not have.
+  redisActivate:
+  - managedredis.cache.azure.m.upbound.io
   - privateendpoints.network.azure.m.upbound.io
 
 # Binds providers to the Azure service principal. Cluster-scoped on purpose: composed managed
@@ -90,8 +101,37 @@ postgres:
   skuName: GP_Standard_D2s_v3
   administratorLogin: psqladmin
 
+# Azure Managed Redis (Microsoft.Cache/redisEnterprise). The retired Azure Cache for Redis took
+# family + skuName + capacity + redisVersion; Managed Redis takes a single sku name and pins the
+# engine at Redis 7.4, so none of those knobs survive. See ADR-0019.
 redis:
-  family: C
-  skuName: Standard
-  capacity: 1
-  redisVersion: "6"
+  # OFF: the platform does not advertise a RedisInstance API it cannot fulfil.
+  #
+  # Azure will not create a Managed Redis instance in this subscription. Every attempt ends
+  # `provisioningState: Failed` with only `OperationFailed: The operation failed.` — 7 attempts
+  # across 3 regions (westus2/westus3/eastus) and 3 SKUs, HA on and off, public on and off,
+  # reproduced with the plain `az` CLI so Crossplane is not implicated. There is no fallback
+  # engine: Azure Cache for Redis AND Cache for Redis Enterprise are both retired and rejected
+  # outright. Tracked in ADR-0019; needs an Azure support ticket, not a code change.
+  #
+  # Everything below this flag is verified against the live CRDs and ready. Flip to true once
+  # Azure creates a Managed Redis instance again — that is the whole re-enable.
+  #
+  # `make render` / `make verify` force this on regardless, so the Composition stays covered by
+  # the local checks while it is withheld from the cluster.
+  enabled: false
+  # Platform size -> Managed Redis SKU. Balanced is the general-purpose tier (4:1 memory:vCPU);
+  # B0 is 0.5 GB, B1 is 1 GB, B3 is 3 GB. Azure reserves ~20% of memory for overhead.
+  sizes:
+    small: Balanced_B0
+    medium: Balanced_B1
+    large: Balanced_B3
+  # Zone-redundant when the region has zones. Available on every SKU including B0 — unlike the
+  # old service, HA is not gated behind a higher tier. Non-HA halves the bill but carries no SLA
+  # and can lose data during maintenance, so the platform default is on.
+  highAvailabilityEnabled: true
+  # Managed Redis is clustered by default and Azure recommends OSS clustering for throughput.
+  # This is client-visible: a cluster-aware library is required to follow MOVED redirects.
+  # NoCluster is available up to 25 GB if a consumer genuinely cannot cluster.
+  clusteringPolicy: OSSCluster
+  evictionPolicy: VolatileLRU

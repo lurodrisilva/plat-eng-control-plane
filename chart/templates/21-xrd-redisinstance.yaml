@@ -2,9 +2,14 @@
 The cache API the platform offers.
 
 Same shape as PostgresInstance: v2 XRD, scope Namespaced, no claim and no XRedisInstance twin
-(ADR-0013 predates the v2 upgrade; ADR-0018 records the supersession). The app declares a size
-and version; it cannot express network placement, because privacy is a platform guarantee.
+(ADR-0013 predates the v2 upgrade; ADR-0018 records the supersession). The app declares a size;
+it cannot express network placement, because privacy is a platform guarantee.
+
+There is deliberately no `version` field. The backing service is Azure Managed Redis, which
+pins the engine at Redis 7.4 and exposes no version knob (ADR-0019) — an enum the platform
+cannot honour is worse than no field at all.
 */ -}}
+{{- if .Values.redis.enabled }}
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
@@ -30,28 +35,26 @@ spec:
             properties:
               size:
                 type: string
-                description: Cache size. Maps to an Azure SKU family and capacity.
+                description: Cache size. Maps to an Azure Managed Redis SKU; see the platform
+                  allowlist.
                 enum:
                 - small
                 - medium
                 - large
                 default: small
-              version:
-                type: string
-                description: Redis major version.
-                enum:
-                - "6"
-                default: "6"
           status:
             type: object
             properties:
               hostname:
                 type: string
                 description: Private hostname of the cache, resolvable only inside the VNet.
-              sslPort:
+              port:
                 type: integer
-                description: TLS port of the cache. Non-TLS is disabled.
+                description: TLS port of the cache. Managed Redis serves 10000; plaintext is
+                  disabled. Reported by Azure rather than assumed, so a consumer never hardcodes
+                  the retired service's 6380.
               cacheId:
                 type: string
-                description: Azure resource ID of the Redis cache. Bridges the cache to its
-                  private endpoint, which cannot be patched from it directly.
+                description: Azure resource ID of the Redis instance. Bridges the instance to
+                  its private endpoint, which cannot be patched from it directly.
+{{- end }}

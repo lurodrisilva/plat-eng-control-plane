@@ -31,7 +31,8 @@ platform guarantee, not a per-app option — an app cannot opt out, because the 
 for it:
 
 - **PostgreSQL Flexible Server** — VNet-injected into the delegated subnet, `publicNetworkAccessEnabled: false`.
-- **Redis** — `publicNetworkAccessEnabled: false` plus a `PrivateEndpoint` and a zone group.
+- **Azure Managed Redis** — `publicNetworkAccess: Disabled` plus a `PrivateEndpoint` and a zone
+  group. Managed Redis cannot be VNet-injected at all, so the endpoint is the only private path.
 
 If you add a resource, it gets a private path before it gets merged.
 
@@ -113,5 +114,11 @@ looks like one.
   `kubectl describe flexibleserver <name> -n <ns>`.
 - **Private-DNS propagation lags provisioning.** Gate consumers on XR `Ready` *plus* a DNS/TCP
   check; Ready does not mean resolvable.
-- **Provisioning is slow and recreates are destructive** — Flexible Server ~5-10 min, Redis
-  ~15-20 min. Several `forProvider` fields are immutable; changing one replaces the server.
+- **Provisioning is slow and recreates are destructive** — Flexible Server ~5-10 min, Managed
+  Redis ~10-15 min. Several `forProvider` fields are immutable; changing one replaces the server.
+- **An Azure service can be retired out from under a Composition.** Azure Cache for Redis now
+  answers new creates with `400 BadRequest: Azure Cache for Redis is retiring`. The chart was
+  valid, the CRD accepted it, `make verify` passed — and every instance still failed, because
+  the rejection only exists at the Azure API. Nothing local catches this class of bug; only an
+  apply does. When a resource fails at the async layer, read the *service's* error before
+  assuming the spec is wrong (ADR-0019).

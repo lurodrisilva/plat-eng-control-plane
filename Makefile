@@ -6,6 +6,15 @@ VALUES      ?= $(CHART)/values-$(ENV).yaml
 FOUNDATION  ?= ../plat-eng-aks-foundation/aks-foundation
 RENDER_OUT  ?= render-out
 
+## What ships is decided by values-$(ENV).yaml. What we CHECK is everything the chart can
+## produce — otherwise disabling an API silently drops its Composition out of the only tests
+## that cover it, and it rots until the day someone re-enables it.
+##
+## redis is withheld from the cluster because Azure will not create a Managed Redis instance
+## (ADR-0019). The Composition is still correct and still verified here, so re-enabling is one
+## flag rather than an archaeology exercise.
+CHECK_FLAGS ?= --set redis.enabled=true
+
 # Default target
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -25,7 +34,7 @@ template: ## Render the chart to stdout
 ## kubeconform is deliberately not used: it has no schemas for Crossplane types and reports
 ## every resource "Skipped", which reads like a pass while checking nothing.
 test: ## Server-side dry-run the rendered manifests against the live CRDs (needs cluster access)
-	@helm template control-plane $(CHART) --values $(VALUES) | \
+	@helm template control-plane $(CHART) --values $(VALUES) $(CHECK_FLAGS) | \
 		kubectl apply --dry-run=server -f -
 
 ## The check that actually catches a bad Composition.
@@ -71,7 +80,7 @@ verify: render ## Dry-run the RENDERED managed resources against live CRDs — c
 render: ## crossplane render each Composition against its example XR
 	@command -v crossplane >/dev/null || { echo "crossplane CLI (v2+) is required"; exit 1; }
 	@mkdir -p $(RENDER_OUT)
-	@helm template control-plane $(CHART) --values $(VALUES) > $(RENDER_OUT)/all.yaml
+	@helm template control-plane $(CHART) --values $(VALUES) $(CHECK_FLAGS) > $(RENDER_OUT)/all.yaml
 	@yq ea 'select(.kind == "Function")' $(RENDER_OUT)/all.yaml > $(RENDER_OUT)/functions.yaml
 	@yq ea 'select(.kind == "EnvironmentConfig")' $(RENDER_OUT)/all.yaml > $(RENDER_OUT)/envconfig.yaml
 	@# render executes functions locally rather than in-cluster; it needs to be told how.
@@ -111,7 +120,7 @@ env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	pg_subnet=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_subnet_id 2>/dev/null); \
 	pg_zone=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_private_dns_zone_id 2>/dev/null); \
 	pe_subnet=$$(cd $(FOUNDATION) && terraform output -raw private_endpoints_subnet_id 2>/dev/null); \
-	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.cache.windows.net"] // empty'); \
+	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.azure.net"] // empty'); \
 	rg=$$(echo "$$pg_subnet" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
 	for v in location pg_subnet pg_zone pe_subnet redis_zone rg; do \
 		eval "val=\$$$$v"; \
