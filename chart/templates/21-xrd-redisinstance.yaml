@@ -48,6 +48,10 @@ spec:
               hostname:
                 type: string
                 description: Private hostname of the cache, resolvable only inside the VNet.
+              sslPort:
+                type: integer
+                description: TLS port of the cache. Non-TLS is disabled.
               cacheId:
                 type: string
-                description: Azure resource ID of the Redis cache.
+                description: Azure resource ID of the Redis cache. Bridges the cache to its
+                  private endpoint, which cannot be patched from it directly.

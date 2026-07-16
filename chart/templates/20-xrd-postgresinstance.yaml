@@ -52,6 +52,9 @@ spec:
               storageMb:
                 type: integer
                 description: Provisioned storage in MB. Growable; shrinking replaces the server.
+                  Bounded to Azure's supported range so a typo cannot request 32TB.
+                minimum: 32768
+                maximum: 33553408
                 default: 32768
               databaseName:
                 type: string

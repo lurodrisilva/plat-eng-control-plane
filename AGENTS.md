@@ -35,23 +35,39 @@ for it:
 
 If you add a resource, it gets a private path before it gets merged.
 
-## The projection that must not be dropped
+## Connection details: compose the Secret, do not project it
 
-A bare `FlexibleServer` exposes its host **only** as `status.atProvider.fqdn` and never writes
-it to a connection secret — upjet only publishes fields it considers sensitive, and an fqdn is
-a plain computed attribute. A pod cannot read a CR's status. So the Composition **must** project
-it:
+**Crossplane v2 removed composite-resource connection details.** An XR has no
+`writeConnectionSecretToRef`, and a Composition's `connectionDetails:` blocks are collected and
+then **silently dropped** — no error, no secret. Do not add them; they look right and do nothing.
+
+The underlying requirement is unchanged. A bare `FlexibleServer` exposes its host **only** as
+`status.atProvider.fqdn` and never writes it to a secret — upjet publishes only fields it deems
+sensitive, and an fqdn is a plain computed attribute. A pod cannot read a CR's status. So the
+Composition still has to deliver a Secret; it just has to *compose* one:
 
 ```yaml
-connectionDetails:
-- type: FromFieldPath
-  fromFieldPath: status.atProvider.fqdn
-  name: host
+- name: connection-secret
+  base: {apiVersion: v1, kind: Secret, type: Opaque}
+  patches:
+  - type: FromCompositeFieldPath
+    fromFieldPath: status.fqdn          # put there by a ToCompositeFieldPath patch on the MR
+    toFieldPath: stringData.host
+    policy: {fromFieldPath: Required}   # no secret until the host is real
 ```
 
-Remove that and every consumer silently loses its hostname. This is *why* Postgres needs a
-Composition rather than a bare managed resource. Same reasoning drives the Redis host/port/key
-projection.
+The contract each block delivers into the app's namespace:
+
+| Block | Secret | Keys | Written by |
+|-------|--------|------|------------|
+| Postgres | `<name>-conn` | `host`, `port`, `username`, `dbname` | composed |
+| Postgres | `<name>-admin-password` | `password` | the provider (`autoGeneratePassword: true`) |
+| Redis | `<name>-conn` | `host`, `port` | composed |
+| Redis | `<name>-auth` | `attribute.*` incl. the access key | the provider |
+
+**Never mint or template a credential here.** Postgres uses `autoGeneratePassword: true` so the
+provider generates one into the secret we name; Redis's access key is sensitive, so upjet
+publishes it. This chart handles neither.
 
 ## Ordering
 
