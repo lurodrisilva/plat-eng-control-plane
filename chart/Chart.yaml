@@ -1,0 +1,13 @@
+apiVersion: v2
+name: control-plane
+description: Crossplane control plane — provider packages, composition functions, credentials, environment facts, and the platform's offered APIs (XRDs + Compositions).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - crossplane
+  - azure
+  - platform
+home: https://github.com/lurodrisilva/plat-eng-control-plane
+maintainers:
+  - name: Platform Engineering

@@ -1,0 +1,135 @@
+{{- /*
+RedisInstance -> Azure Cache for Redis, reachable only through a private endpoint.
+
+Unlike Flexible Server, Redis cannot be VNet-injected on Standard tier, so privacy is built
+from two resources: the cache with public access off, plus a PrivateEndpoint in the
+private-endpoints subnet with a zone group registering it in privatelink.redis.cache.windows.net.
+
+VERIFICATION STATUS (2026-07-16):
+  - RedisCache      cache.azure.m.upbound.io/v1beta1   VERIFIED against live CRDs on aks-test.
+  - PrivateEndpoint network.azure.m.upbound.io/v1beta1 NOT VERIFIED. provider-azure-network was
+    removed from aks-test after activating its ~238 MRDs took the Free-tier API server offline.
+    It cannot be reinstalled until plat-eng-aks-foundation sets
+    `provider.defaultActivations={}` on the crossplane release, letting the activation policy
+    in 02-activation-policy.yaml narrow it to privateendpoints alone. Re-check this resource's
+    apiVersion and field names against `kubectl explain` before trusting it.
+*/ -}}
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: redisinstance-azure-private
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    engine: azure-redis
+spec:
+  compositeTypeRef:
+    apiVersion: {{ .Values.xrds.group }}/{{ .Values.xrds.version }}
+    kind: RedisInstance
+  writeConnectionSecretsToNamespace: {{ .Values.namespace }}
+  mode: Pipeline
+  pipeline:
+  - step: environment-configs
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: {{ .Values.environmentConfig.name }}
+  - step: patch-and-transform
+    functionRef:
+      name: function-patch-and-transform
+    input:
+      apiVersion: pt.fn.crossplane.io/v1beta1
+      kind: Resources
+      resources:
+      - name: rediscache
+        base:
+          apiVersion: cache.azure.m.upbound.io/v1beta1
+          kind: RedisCache
+          spec:
+            providerConfigRef:
+              kind: ClusterProviderConfig
+              name: {{ .Values.providerConfig.name }}
+            forProvider:
+              location: {{ .Values.redis.location }}
+              resourceGroupName: {{ .Values.redis.resourceGroupName }}
+              family: {{ .Values.redis.family }}
+              skuName: {{ .Values.redis.skuName }}
+              capacity: {{ .Values.redis.capacity }}
+              # Quoted deliberately: an unquoted 6 becomes an int and the provider rejects it.
+              redisVersion: {{ .Values.redis.redisVersion | quote }}
+              # Private-only. The XR has no field that can flip either of these.
+              publicNetworkAccessEnabled: false
+              nonSslPortEnabled: false
+              minimumTlsVersion: "1.2"
+        patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.version
+          toFieldPath: spec.forProvider.redisVersion
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.size
+          toFieldPath: spec.forProvider.capacity
+          transforms:
+          - type: map
+            map:
+              small: 1
+              medium: 2
+              large: 3
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.hostname
+          toFieldPath: status.hostname
+        # Hop 1 of 2: surface the cache's Azure id on the XR so the PrivateEndpoint below can
+        # read it. patch-and-transform cannot patch directly between composed resources.
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.id
+          toFieldPath: status.cacheId
+        connectionDetails:
+        - type: FromFieldPath
+          fromFieldPath: status.atProvider.hostname
+          name: host
+        - type: FromFieldPath
+          fromFieldPath: status.atProvider.sslPort
+          name: port
+        - type: FromConnectionSecretKey
+          fromConnectionSecretKey: attribute.primary_access_key
+          name: password
+
+      - name: privateendpoint
+        base:
+          apiVersion: network.azure.m.upbound.io/v1beta1
+          kind: PrivateEndpoint
+          spec:
+            providerConfigRef:
+              kind: ClusterProviderConfig
+              name: {{ .Values.providerConfig.name }}
+            forProvider:
+              location: {{ .Values.redis.location }}
+              resourceGroupName: {{ .Values.redis.resourceGroupName }}
+              privateServiceConnection:
+              - name: redis
+                isManualConnection: false
+                subresourceNames:
+                - redisCache
+              privateDnsZoneGroup:
+              - name: redis
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: peSubnetId
+          toFieldPath: spec.forProvider.subnetId
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: redisZoneId
+          toFieldPath: spec.forProvider.privateDnsZoneGroup[0].privateDnsZoneIds[0]
+        # Hop 2 of 2: bind the endpoint to the cache created above.
+        - type: FromCompositeFieldPath
+          fromFieldPath: status.cacheId
+          toFieldPath: spec.forProvider.privateServiceConnection[0].privateConnectionResourceId
+          policy:
+            fromFieldPath: Required
+        - type: FromCompositeFieldPath
+          fromFieldPath: metadata.name
+          toFieldPath: spec.forProvider.privateServiceConnection[0].name

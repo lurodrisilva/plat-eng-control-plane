@@ -67,12 +67,16 @@ CRDs here are large. The ArgoCD `Application` syncing this repo **must** set
 ## Validate before you push
 
 ```sh
-make lint     # helm lint
-make test     # kubeconform
+make lint     # helm lint — offline
 make render   # crossplane render — offline, shows the MRs a Composition produces
+make test     # server dry-run against live CRDs — creates nothing
 ```
 
 `make render` costs nothing and catches most Composition mistakes. Use it.
+
+Do not reach for `kubeconform` here. It carries no schemas for Crossplane types, so it skips
+every resource and reports success while validating nothing — which is worse than no check,
+because it looks like one. `make test` dry-runs against the CRDs actually installed.
 
 ## Traps worth knowing
 

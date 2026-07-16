@@ -61,12 +61,18 @@ never reaches `Ready`.
 ## Validate
 
 ```sh
-make lint      # helm lint + kubeconform
-make render    # crossplane render — shows the managed resources a Composition produces
+make lint      # helm lint — offline
+make render    # crossplane render — offline, runs the functions locally via Docker
+make test      # server-side dry-run against the live CRDs — needs cluster access, creates nothing
 ```
 
-`make render` runs entirely offline. It is the fastest way to see whether a Composition does
-what you think before anything touches Azure.
+`make render` is the fastest way to see whether a Composition does what you think before
+anything touches Azure. It prints the actual managed resources, with patches applied — so a
+missing `delegatedSubnetId` or a `publicNetworkAccessEnabled: true` is visible in seconds.
+
+Note that Redis renders its `PrivateEndpoint` only on the **second** pass: the endpoint needs
+the cache's Azure resource id, which does not exist until the cache does. Rendering an XR with
+`status.cacheId` populated shows the completed graph. That is the intended behaviour, not a bug.
 
 ## Requirements
 

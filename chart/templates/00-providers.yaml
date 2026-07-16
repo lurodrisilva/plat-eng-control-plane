@@ -1,0 +1,60 @@
+{{- /*
+Upbound Azure provider packages. Wave 0: nothing else here can apply until these register
+their CRDs.
+
+Every azure-* provider must stay on the same version as the family provider. Two packages
+resolving the same dependency at different versions produces:
+  "cannot initialize dependency graph from the packages in the lock:
+   node xpkg.upbound.io/upbound/provider-azure-cache already exists"
+which degrades every provider in the family, not just the conflicting one.
+*/ -}}
+{{- $reg := .Values.providers.registry -}}
+{{- $ver := .Values.providers.version -}}
+{{- $pull := .Values.providers.packagePullPolicy -}}
+{{- if .Values.providers.family }}
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-family-azure
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ $reg }}/provider-family-azure:{{ $ver }}
+  packagePullPolicy: {{ $pull }}
+{{- end }}
+{{- if .Values.providers.dbforpostgresql }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-azure-dbforpostgresql
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ $reg }}/provider-azure-dbforpostgresql:{{ $ver }}
+  packagePullPolicy: {{ $pull }}
+{{- end }}
+{{- if .Values.providers.cache }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-azure-cache
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ $reg }}/provider-azure-cache:{{ $ver }}
+  packagePullPolicy: {{ $pull }}
+{{- end }}
+{{- if .Values.providers.network }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: upbound-provider-azure-network
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ $reg }}/provider-azure-network:{{ $ver }}
+  packagePullPolicy: {{ $pull }}
+{{- end }}

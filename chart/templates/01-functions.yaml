@@ -1,0 +1,38 @@
+{{- /*
+Composition functions. Crossplane v2 removed `mode: Resources`; every Composition runs a
+pipeline, and a pipeline step cannot resolve without its Function package installed.
+*/ -}}
+{{- with .Values.functions.patchAndTransform }}
+{{- if .enabled }}
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-patch-and-transform
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ .package }}:{{ .version }}
+  packagePullPolicy: {{ .packagePullPolicy }}
+{{- end }}
+{{- end }}
+{{- /*
+Resolves EnvironmentConfigs into the pipeline context under the well-known key
+`apiextensions.crossplane.io/environment`, where patch-and-transform's
+FromEnvironmentFieldPath patches read them. A Composition that references an
+EnvironmentConfig without running this step first renders with an empty environment and its
+network patches quietly do nothing.
+*/ -}}
+{{- with .Values.functions.environmentConfigs }}
+{{- if .enabled }}
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Function
+metadata:
+  name: function-environment-configs
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  package: {{ .package }}:{{ .version }}
+  packagePullPolicy: {{ .packagePullPolicy }}
+{{- end }}
+{{- end }}
