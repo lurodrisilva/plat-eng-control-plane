@@ -1,0 +1,14 @@
+# Helm
+charts/
+*.tgz
+
+# Local render / validation output
+render-out/
+.kubeconform-cache/
+
+# Editors / OS
+.DS_Store
+*.swp
+
+# Agent state
+.omc/
