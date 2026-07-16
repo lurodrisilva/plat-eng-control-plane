@@ -192,3 +192,9 @@ spec:
           - type: convert
             convert:
               toType: string
+        # A Secret has no status.conditions, and patch-and-transform's default readiness check
+        # waits for Ready=True — so without this the composed Secret is never ready and the XR
+        # never goes Ready, no matter how healthy the Azure resources are. `None` means ready
+        # as soon as it exists, which for a Secret is the only meaningful definition.
+        readinessChecks:
+        - type: None
