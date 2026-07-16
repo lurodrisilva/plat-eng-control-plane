@@ -1,0 +1,99 @@
+# Upbound provider packages. Keep every azure-* provider on the same version as the family
+# provider — mixing versions within a family corrupts the Crossplane dependency graph.
+providers:
+  registry: xpkg.upbound.io/upbound
+  version: v2.5.2
+  packagePullPolicy: Always
+  family: true
+  cache: true
+  dbforpostgresql: true
+  # OFF until Safe Start is actually in force on the target cluster. This provider defines ~238
+  # resources; under a wildcard activation policy it registers all of them at once and takes an
+  # AKS Free-tier control plane offline — it did exactly that on aks-test, 2026-07-16.
+  #
+  # Flip to true only once BOTH are true on the cluster:
+  #   1. the crossplane release runs with provider.defaultActivations: []
+  #      (plat-eng-aks-foundation, merged 2026-07-16 — must also be `terraform apply`d), and
+  #   2. `kubectl get managedresourceactivationpolicy default` returns NotFound
+  #      (core init creates that object but never deletes it; delete it once, after the apply).
+  #
+  # Until then the Redis PrivateEndpoint cannot be created, so a RedisInstance yields a cache
+  # with no private path. That failure is loud (the XR never goes Ready), unlike the outage.
+  network: false
+
+# Composition functions. Crossplane v2 removed `mode: Resources`, so a Composition cannot
+# render anything without a Function package installed.
+#
+# Both are required. EnvironmentConfigs are not resolved natively: function-environment-configs
+# merges them into the pipeline context, and only then can patch-and-transform read them via
+# FromEnvironmentFieldPath. Drop it and every environment patch silently no-ops — which for
+# this control plane means composing an Azure resource with no delegated subnet.
+functions:
+  patchAndTransform:
+    enabled: true
+    package: xpkg.crossplane.io/crossplane-contrib/function-patch-and-transform
+    version: v0.10.3
+    packagePullPolicy: IfNotPresent
+  environmentConfigs:
+    enabled: true
+    package: xpkg.crossplane.io/crossplane-contrib/function-environment-configs
+    version: v0.4.0
+    packagePullPolicy: IfNotPresent
+
+# Safe Start. See templates/02-activation-policy.yaml — activating the full Azure provider
+# family registers ~290 CRDs and can take an AKS Free-tier control plane offline. Activate
+# only the resources a Composition actually composes.
+activationPolicy:
+  enabled: true
+  name: platform-azure
+  activate:
+  - flexibleservers.dbforpostgresql.azure.m.upbound.io
+  - flexibleserverdatabases.dbforpostgresql.azure.m.upbound.io
+  - rediscaches.cache.azure.m.upbound.io
+  - privateendpoints.network.azure.m.upbound.io
+
+# Binds providers to the Azure service principal. Cluster-scoped on purpose: composed managed
+# resources land in each application's namespace, so a namespaced ProviderConfig would have to
+# be replicated into every one of them.
+#
+# The Secret is created by plat-eng-aks-foundation (Terraform), not by this chart.
+providerConfig:
+  name: default
+  secret:
+    name: azure-crossplane-credentials
+    namespace: resources-system
+    key: credentials
+
+# Per-cluster network facts consumed by the Compositions.
+#
+# GENERATED — do not set these here. `make env-config ENV=<env>` writes values-<env>.yaml from
+# `terraform output -json`. Empty defaults make a missing values file fail loudly at render
+# time rather than silently composing a public-facing resource.
+environmentConfig:
+  name: azure-platform
+  postgresSubnetId: ""
+  postgresZoneId: ""
+  peSubnetId: ""
+  redisZoneId: ""
+
+# The platform's offered APIs.
+xrds:
+  group: platform.myorg.io
+  version: v1alpha1
+
+# Azure resource defaults for composed resources. Overridable per environment.
+postgres:
+  location: eastus
+  resourceGroupName: aks-test-rg
+  version: "16"
+  storageMb: 32768
+  skuName: GP_Standard_D2s_v3
+  administratorLogin: psqladmin
+
+redis:
+  location: eastus
+  resourceGroupName: aks-test-rg
+  family: C
+  skuName: Standard
+  capacity: 1
+  redisVersion: "6"

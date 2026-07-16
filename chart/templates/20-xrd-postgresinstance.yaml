@@ -1,0 +1,73 @@
+{{- /*
+The SQL API the platform offers.
+
+apiextensions.crossplane.io/v2 + scope: Namespaced. There is no claim and no XPostgresInstance
+twin: in Crossplane v2 a namespaced XR is itself the namespaced, app-facing object that a
+claim used to stand in for. (ADR-0010 predates the v2 upgrade and describes the v1 claim
+shape; ADR-0018 records the supersession.)
+
+The API is deliberately small. An app declares what it needs — size, version, database name —
+and cannot express where the server sits on the network, because that is a platform guarantee
+rather than an application choice. There is no field here that can make a server public.
+*/ -}}
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: postgresinstances.{{ .Values.xrds.group }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  scope: Namespaced
+  group: {{ .Values.xrds.group }}
+  names:
+    kind: PostgresInstance
+    plural: postgresinstances
+  versions:
+  - name: {{ .Values.xrds.version }}
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              size:
+                type: string
+                description: Server size. Maps to an Azure SKU; see the platform allowlist.
+                enum:
+                - small
+                - medium
+                - large
+                default: small
+              version:
+                type: string
+                description: PostgreSQL major version.
+                enum:
+                - "14"
+                - "15"
+                - "16"
+                default: "16"
+              storageMb:
+                type: integer
+                description: Provisioned storage in MB. Growable; shrinking replaces the server.
+                  Bounded to Azure's supported range so a typo cannot request 32TB.
+                minimum: 32768
+                maximum: 33553408
+                default: 32768
+              databaseName:
+                type: string
+                description: Name of the database created on the server.
+                default: appdb
+            required:
+            - databaseName
+          status:
+            type: object
+            properties:
+              fqdn:
+                type: string
+                description: Private FQDN of the server, resolvable only inside the VNet.
+              serverId:
+                type: string
+                description: Azure resource ID of the Flexible Server.

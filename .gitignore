@@ -12,3 +12,4 @@ render-out/
 
 # Agent state
 .omc/
+graphify-out/

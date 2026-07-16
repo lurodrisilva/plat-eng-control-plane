@@ -1,0 +1,30 @@
+{{- /*
+Safe Start. Crossplane v2 ships every managed resource as an inactive
+ManagedResourceDefinition: no CRD, no API endpoint, no controller. A
+ManagedResourceActivationPolicy opts specific ones in.
+
+This is not an optimisation — it is load-bearing. provider-azure-network alone defines ~238
+resources. Activating the whole family registers ~290 CRDs, which is enough to saturate API
+discovery and make the control plane unavailable (observed on aks-test, 2026-07-16: the
+apiserver returned ServiceUnavailable for ~15 minutes and providers flapped
+Installed=False). Activate only what a Composition actually composes.
+
+Activation policies are ADDITIVE: an MRD is Active if *any* policy activates it. This policy
+therefore only has an effect while no wildcard policy exists. The Crossplane Helm chart
+creates `default` with activate: ["*"] unless it is installed with
+`provider.defaultActivations={}` — which plat-eng-aks-foundation sets on the crossplane
+ArgoCD Application. If MRD counts ever explode again, look there first.
+*/ -}}
+{{- if .Values.activationPolicy.enabled }}
+apiVersion: apiextensions.crossplane.io/v1alpha1
+kind: ManagedResourceActivationPolicy
+metadata:
+  name: {{ .Values.activationPolicy.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  activate:
+{{- range .Values.activationPolicy.activate }}
+  - {{ . | quote }}
+{{- end }}
+{{- end }}

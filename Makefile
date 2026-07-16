@@ -1,4 +1,4 @@
-.PHONY: help lint template render env-config test all
+.PHONY: help lint template render verify env-config test all
 
 CHART       ?= chart
 ENV         ?= aks-test
@@ -16,42 +16,104 @@ lint: ## helm lint the control-plane chart
 template: ## Render the chart to stdout
 	@helm template control-plane $(CHART) --values $(VALUES)
 
-test: ## Schema-validate rendered manifests (Crossplane CRDs are not in the default schema set)
+## Validates the TOP-LEVEL objects against the CRDs actually installed in the cluster.
+##
+## Know its blind spot: the managed resources inside a Composition's `input.resources[].base`
+## are opaque to the API server — this validates the Composition, not what the Composition
+## would create. `make verify` closes that gap; run both.
+##
+## kubeconform is deliberately not used: it has no schemas for Crossplane types and reports
+## every resource "Skipped", which reads like a pass while checking nothing.
+test: ## Server-side dry-run the rendered manifests against the live CRDs (needs cluster access)
 	@helm template control-plane $(CHART) --values $(VALUES) | \
-		kubeconform -strict -summary -ignore-missing-schemas
+		kubectl apply --dry-run=server -f -
 
-## Offline Composition check. Shows the managed resources a Composition would produce
-## without contacting a cluster or Azure. Requires the crossplane CLI (v2+).
+## The check that actually catches a bad Composition.
+##
+## Neither `make test` nor `make render` can do this alone. `test` never sees inside a
+## Composition's base; `render` never contacts a cluster, so it cannot know a CRD's schema and
+## will happily emit a field that does not exist. Both blockers found in review (a nonexistent
+## administratorPasswordSecretRef.namespace, and a nonexistent FlexibleServerDatabase
+## forProvider.name) passed `test` AND `render` cleanly. Only dry-running the *rendered* output
+## catches them.
+##
+## Resources are dry-run in `default` with namespace/ownerRefs stripped: the XR's real namespace
+## need not exist, and nothing is created. Kinds whose provider is withheld (PrivateEndpoint,
+## see values.yaml providers.network) are reported as skipped rather than failed.
+XR_API := $(shell yq -r '.xrds.group' $(CHART)/values.yaml)/$(shell yq -r '.xrds.version' $(CHART)/values.yaml)
+
+verify: render ## Dry-run the RENDERED managed resources against live CRDs — catches bad bases
+	@rc=0; for f in $(RENDER_OUT)/*.rendered.yaml; do \
+		name=$$(basename $$f .rendered.yaml); \
+		echo "--- verify: $$name"; \
+		yq ea 'select(.apiVersion != "$(XR_API)") | del(.metadata.namespace) | del(.metadata.ownerReferences) | del(.metadata.generateName)' \
+			$$f > $(RENDER_OUT)/$$name.composed.yaml; \
+		yq ea '.kind' $(RENDER_OUT)/$$name.composed.yaml | grep -vE '^(---|null)$$' | sort -u > $(RENDER_OUT)/$$name.kinds; \
+		for kind in $$(cat $(RENDER_OUT)/$$name.kinds); do \
+			yq ea "select(.kind == \"$$kind\")" $(RENDER_OUT)/$$name.composed.yaml > $(RENDER_OUT)/$$name.$$kind.yaml; \
+			if out=$$(kubectl apply --dry-run=server -n default -f $(RENDER_OUT)/$$name.$$kind.yaml 2>&1); then \
+				echo "      OK   $$kind"; \
+			elif echo "$$out" | grep -q "no matches for kind"; then \
+				echo "      SKIP $$kind (provider withheld — see values.yaml providers.network)"; \
+			else \
+				echo "      FAIL $$kind"; echo "$$out" | sed 's/^/           /'; rc=1; \
+			fi; \
+		done; \
+	done; exit $$rc
+
+## Offline Composition check: runs the real functions locally (via Docker) and prints the
+## managed resources a Composition would actually create. This is the only local check that
+## sees inside a Composition — `make test` cannot (see its note above).
+##
+## crossplane render takes ONE Composition, a functions file, and needs the EnvironmentConfig
+## passed as an extra resource, so the chart output is split apart first. Rendering the whole
+## chart at it fails with "not a composition: ClusterProviderConfig/default".
 render: ## crossplane render each Composition against its example XR
+	@command -v crossplane >/dev/null || { echo "crossplane CLI (v2+) is required"; exit 1; }
 	@mkdir -p $(RENDER_OUT)
 	@helm template control-plane $(CHART) --values $(VALUES) > $(RENDER_OUT)/all.yaml
-	@for xr in examples/*.yaml; do \
+	@yq ea 'select(.kind == "Function")' $(RENDER_OUT)/all.yaml > $(RENDER_OUT)/functions.yaml
+	@yq ea 'select(.kind == "EnvironmentConfig")' $(RENDER_OUT)/all.yaml > $(RENDER_OUT)/envconfig.yaml
+	@# render executes functions locally rather than in-cluster; it needs to be told how.
+	@yq -i '.metadata.annotations."render.crossplane.io/runtime" = "Docker"' $(RENDER_OUT)/functions.yaml
+	@rc=0; for xr in examples/*.yaml; do \
+		kind=$$(yq e '.kind' $$xr); \
 		name=$$(basename $$xr .yaml); \
-		echo "--- render: $$name"; \
-		crossplane render $$xr \
-			$(RENDER_OUT)/all.yaml \
-			$(RENDER_OUT)/all.yaml \
-			--include-context 2>&1 | tee $(RENDER_OUT)/$$name.rendered.yaml; \
-	done
+		yq ea "select(.kind == \"Composition\" and .spec.compositeTypeRef.kind == \"$$kind\")" \
+			$(RENDER_OUT)/all.yaml > $(RENDER_OUT)/$$name-composition.yaml; \
+		[ -s $(RENDER_OUT)/$$name-composition.yaml ] || { echo "FAIL $$name: no Composition for kind $$kind"; rc=1; continue; }; \
+		echo "--- render: $$name ($$kind)"; \
+		if crossplane render $$xr \
+			$(RENDER_OUT)/$$name-composition.yaml \
+			$(RENDER_OUT)/functions.yaml \
+			--extra-resources=$(RENDER_OUT)/envconfig.yaml \
+			> $(RENDER_OUT)/$$name.rendered.yaml 2>$(RENDER_OUT)/$$name.err; then \
+			grep -E '^kind:' $(RENDER_OUT)/$$name.rendered.yaml | sed 's/^/      /'; \
+		else \
+			echo "FAIL $$name:"; sed 's/^/      /' $(RENDER_OUT)/$$name.err; rc=1; \
+		fi; \
+	done; exit $$rc
 
 ## Regenerate the per-environment EnvironmentConfig values from Terraform.
 ## These IDs are owned by plat-eng-aks-foundation; never hand-edit values-$(ENV).yaml.
+## Outputs are read one at a time on purpose. `terraform output -json` with no name emits every
+## output including generated SSH keys, whose raw control characters make the document
+## unparseable by jq.
 env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	@command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 	@test -d $(FOUNDATION) || { echo "foundation not found at $(FOUNDATION)"; exit 1; }
 	@echo "Reading terraform outputs from $(FOUNDATION) ..."
-	@tf=$$(cd $(FOUNDATION) && terraform output -json) || exit 1; \
-	pg_subnet=$$(echo "$$tf"  | jq -r '.postgres_flexibleserver_subnet_id.value // empty'); \
-	pg_zone=$$(echo "$$tf"    | jq -r '.postgres_flexibleserver_private_dns_zone_id.value // empty'); \
-	pe_subnet=$$(echo "$$tf"  | jq -r '.private_endpoints_subnet_id.value // empty'); \
-	redis_zone=$$(echo "$$tf" | jq -r '.private_dns_zone_ids.value["privatelink.redis.cache.windows.net"] // empty'); \
+	@pg_subnet=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_subnet_id 2>/dev/null); \
+	pg_zone=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_private_dns_zone_id 2>/dev/null); \
+	pe_subnet=$$(cd $(FOUNDATION) && terraform output -raw private_endpoints_subnet_id 2>/dev/null); \
+	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.cache.windows.net"] // empty'); \
 	for v in pg_subnet pg_zone pe_subnet redis_zone; do \
 		eval "val=\$$$$v"; \
-		[ -n "$$val" ] || { echo "ERROR: terraform output for $$v is empty — has 'terraform apply' run?"; exit 1; }; \
+		[ -n "$$val" ] || { echo "ERROR: terraform output for $$v is empty — has 'terraform apply' run in $(FOUNDATION)?"; exit 1; }; \
 	done; \
 	{ \
 		echo "# GENERATED by 'make env-config ENV=$(ENV)'. Do not hand-edit."; \
-		echo "# Source: terraform output -json ($(FOUNDATION)), environment $(ENV)."; \
+		echo "# Source: terraform output ($(FOUNDATION)), environment $(ENV)."; \
 		echo "# These IDs are owned by plat-eng-aks-foundation. If a subnet or private-DNS"; \
 		echo "# zone is recreated, re-run this target — a stale ID surfaces as an XR that"; \
 		echo "# never reaches Ready."; \
@@ -64,4 +126,4 @@ env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	} > $(VALUES)
 	@echo "Wrote $(VALUES)"
 
-all: lint test render ## Run every local check
+all: lint render test verify ## Run every local check

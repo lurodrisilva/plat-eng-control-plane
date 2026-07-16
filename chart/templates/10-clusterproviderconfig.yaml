@@ -1,0 +1,28 @@
+{{- /*
+Binds the Azure providers to the service principal that plat-eng-aks-foundation created.
+
+ClusterProviderConfig, not ProviderConfig, and in the `azure.m.upbound.io` group, not the
+legacy `azure.upbound.io` one. Both distinctions matter:
+
+  - Group: only a config in the `.m.` group serves namespaced managed resources. The legacy
+    ProviderConfig in `azure.upbound.io` serves cluster-scoped MRs and is invisible to
+    everything this control plane composes.
+  - Scope: composed MRs land in each application's namespace, so a namespaced ProviderConfig
+    would have to be replicated into every one of them. Cluster-scoped resolves from all.
+
+The referenced Secret is created by Terraform, not here — this chart must never hold Azure
+credentials.
+*/ -}}
+apiVersion: azure.m.upbound.io/v1beta1
+kind: ClusterProviderConfig
+metadata:
+  name: {{ .Values.providerConfig.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: {{ .Values.providerConfig.secret.name }}
+      namespace: {{ .Values.providerConfig.secret.namespace }}
+      key: {{ .Values.providerConfig.secret.key }}

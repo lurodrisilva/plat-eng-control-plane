@@ -1,0 +1,181 @@
+{{- /*
+RedisInstance -> Azure Cache for Redis, reachable only through a private endpoint.
+
+Unlike Flexible Server, Redis cannot be VNet-injected on Standard tier, so privacy is built
+from two resources: the cache with public access off, plus a PrivateEndpoint in the
+private-endpoints subnet with a zone group registering it in privatelink.redis.cache.windows.net.
+
+VERIFICATION STATUS (2026-07-16):
+  - RedisCache      cache.azure.m.upbound.io/v1beta1   VERIFIED against live CRDs on aks-test.
+  - PrivateEndpoint network.azure.m.upbound.io/v1beta1 NOT VERIFIED. provider-azure-network is
+    withheld (values.yaml providers.network) until the wildcard activation policy is gone —
+    activating its ~238 MRDs took the Free-tier API server offline on 2026-07-16. Re-check this
+    resource's apiVersion and fields with `kubectl explain` once the provider is installed.
+    Until then a RedisInstance composes a cache with public access off and NO private endpoint:
+    unreachable, and still billing.
+
+## How the app gets its credentials
+
+Crossplane v2 removed composite-resource connection details, so the connection Secret is
+composed here rather than projected (see the same note in the Postgres Composition). Two
+secrets land in the XR's namespace:
+
+  <name>-redis-conn  host, port  (composed below; engine in the name so it cannot collide
+                     with a same-named PostgresInstance's secret)
+  <name>-auth   the cache's own connection details, written by the provider: the access key
+                is sensitive, so upjet publishes it and this chart never handles it. Exact key
+                names are upjet's (`attribute.*`) and are unverified until a cache exists.
+*/ -}}
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: redisinstance-azure-private
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  labels:
+    engine: azure-redis
+spec:
+  compositeTypeRef:
+    apiVersion: {{ .Values.xrds.group }}/{{ .Values.xrds.version }}
+    kind: RedisInstance
+  mode: Pipeline
+  pipeline:
+  - step: environment-configs
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: {{ .Values.environmentConfig.name }}
+  - step: patch-and-transform
+    functionRef:
+      name: function-patch-and-transform
+    input:
+      apiVersion: pt.fn.crossplane.io/v1beta1
+      kind: Resources
+      resources:
+      - name: rediscache
+        base:
+          apiVersion: cache.azure.m.upbound.io/v1beta1
+          kind: RedisCache
+          spec:
+            providerConfigRef:
+              kind: ClusterProviderConfig
+              name: {{ .Values.providerConfig.name }}
+            forProvider:
+              location: {{ .Values.redis.location }}
+              resourceGroupName: {{ .Values.redis.resourceGroupName }}
+              family: {{ .Values.redis.family }}
+              skuName: {{ .Values.redis.skuName }}
+              capacity: {{ .Values.redis.capacity }}
+              # Quoted deliberately: an unquoted 6 becomes an int and the provider rejects it.
+              redisVersion: {{ .Values.redis.redisVersion | quote }}
+              # Private-only. The XR has no field that can flip either of these.
+              publicNetworkAccessEnabled: false
+              nonSslPortEnabled: false
+              minimumTlsVersion: "1.2"
+        patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.version
+          toFieldPath: spec.forProvider.redisVersion
+        - type: FromCompositeFieldPath
+          fromFieldPath: spec.size
+          toFieldPath: spec.forProvider.capacity
+          transforms:
+          - type: map
+            map:
+              small: 1
+              medium: 2
+              large: 3
+        # The access key is sensitive, so the provider publishes it to this secret. Named
+        # after the XR; namespace-local, like every namespaced MR's secret ref.
+        - type: FromCompositeFieldPath
+          fromFieldPath: metadata.name
+          toFieldPath: spec.writeConnectionSecretToRef.name
+          transforms:
+          - type: string
+            string:
+              type: Format
+              fmt: "%s-auth"
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.hostname
+          toFieldPath: status.hostname
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.sslPort
+          toFieldPath: status.sslPort
+        # Hop 1 of 2: surface the cache's Azure id on the XR so the PrivateEndpoint below can
+        # read it. patch-and-transform cannot patch directly between composed resources.
+        - type: ToCompositeFieldPath
+          fromFieldPath: status.atProvider.id
+          toFieldPath: status.cacheId
+
+      - name: privateendpoint
+        base:
+          apiVersion: network.azure.m.upbound.io/v1beta1
+          kind: PrivateEndpoint
+          spec:
+            providerConfigRef:
+              kind: ClusterProviderConfig
+              name: {{ .Values.providerConfig.name }}
+            forProvider:
+              location: {{ .Values.redis.location }}
+              resourceGroupName: {{ .Values.redis.resourceGroupName }}
+              privateServiceConnection:
+              - name: redis
+                isManualConnection: false
+                subresourceNames:
+                - redisCache
+              privateDnsZoneGroup:
+              - name: redis
+        patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: peSubnetId
+          toFieldPath: spec.forProvider.subnetId
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: redisZoneId
+          toFieldPath: spec.forProvider.privateDnsZoneGroup[0].privateDnsZoneIds[0]
+        # Hop 2 of 2: bind the endpoint to the cache created above. Required, so the endpoint
+        # is skipped until the cache's id exists — it renders on the second reconcile.
+        - type: FromCompositeFieldPath
+          fromFieldPath: status.cacheId
+          toFieldPath: spec.forProvider.privateServiceConnection[0].privateConnectionResourceId
+          policy:
+            fromFieldPath: Required
+        - type: FromCompositeFieldPath
+          fromFieldPath: metadata.name
+          toFieldPath: spec.forProvider.privateServiceConnection[0].name
+
+      # The connection contract. Composed rather than projected, because v2 has no XR
+      # connection details. Required on status.hostname, so it never appears with an empty host.
+      - name: connection-secret
+        base:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+        patches:
+        - type: FromCompositeFieldPath
+          fromFieldPath: metadata.name
+          toFieldPath: metadata.name
+          transforms:
+          - type: string
+            string:
+              type: Format
+              fmt: "%s-redis-conn"
+        - type: FromCompositeFieldPath
+          fromFieldPath: status.hostname
+          toFieldPath: stringData.host
+          policy:
+            fromFieldPath: Required
+        - type: FromCompositeFieldPath
+          fromFieldPath: status.sslPort
+          toFieldPath: stringData.port
+          policy:
+            fromFieldPath: Required
+          transforms:
+          - type: convert
+            convert:
+              toType: string

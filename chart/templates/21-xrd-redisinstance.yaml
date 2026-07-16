@@ -1,0 +1,57 @@
+{{- /*
+The cache API the platform offers.
+
+Same shape as PostgresInstance: v2 XRD, scope Namespaced, no claim and no XRedisInstance twin
+(ADR-0013 predates the v2 upgrade; ADR-0018 records the supersession). The app declares a size
+and version; it cannot express network placement, because privacy is a platform guarantee.
+*/ -}}
+apiVersion: apiextensions.crossplane.io/v2
+kind: CompositeResourceDefinition
+metadata:
+  name: redisinstances.{{ .Values.xrds.group }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  scope: Namespaced
+  group: {{ .Values.xrds.group }}
+  names:
+    kind: RedisInstance
+    plural: redisinstances
+  versions:
+  - name: {{ .Values.xrds.version }}
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              size:
+                type: string
+                description: Cache size. Maps to an Azure SKU family and capacity.
+                enum:
+                - small
+                - medium
+                - large
+                default: small
+              version:
+                type: string
+                description: Redis major version.
+                enum:
+                - "6"
+                default: "6"
+          status:
+            type: object
+            properties:
+              hostname:
+                type: string
+                description: Private hostname of the cache, resolvable only inside the VNet.
+              sslPort:
+                type: integer
+                description: TLS port of the cache. Non-TLS is disabled.
+              cacheId:
+                type: string
+                description: Azure resource ID of the Redis cache. Bridges the cache to its
+                  private endpoint, which cannot be patched from it directly.

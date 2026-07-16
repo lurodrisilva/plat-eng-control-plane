@@ -21,7 +21,7 @@ The Crossplane control plane for the Azure platform. Read this before changing a
    MR versions per service and they are not uniform across the family:
    ```sh
    kubectl get crds | grep azure.m.upbound.io
-   kubectl explain flexibleserver --api-version=dbforpostgresql.azure.m.upbound.io/v1beta2
+   kubectl explain flexibleserver --api-version=dbforpostgresql.azure.m.upbound.io/v1beta1
    ```
 
 ## The private-network constraint
@@ -35,23 +35,39 @@ for it:
 
 If you add a resource, it gets a private path before it gets merged.
 
-## The projection that must not be dropped
+## Connection details: compose the Secret, do not project it
 
-A bare `FlexibleServer` exposes its host **only** as `status.atProvider.fqdn` and never writes
-it to a connection secret — upjet only publishes fields it considers sensitive, and an fqdn is
-a plain computed attribute. A pod cannot read a CR's status. So the Composition **must** project
-it:
+**Crossplane v2 removed composite-resource connection details.** An XR has no
+`writeConnectionSecretToRef`, and a Composition's `connectionDetails:` blocks are collected and
+then **silently dropped** — no error, no secret. Do not add them; they look right and do nothing.
+
+The underlying requirement is unchanged. A bare `FlexibleServer` exposes its host **only** as
+`status.atProvider.fqdn` and never writes it to a secret — upjet publishes only fields it deems
+sensitive, and an fqdn is a plain computed attribute. A pod cannot read a CR's status. So the
+Composition still has to deliver a Secret; it just has to *compose* one:
 
 ```yaml
-connectionDetails:
-- type: FromFieldPath
-  fromFieldPath: status.atProvider.fqdn
-  name: host
+- name: connection-secret
+  base: {apiVersion: v1, kind: Secret, type: Opaque}
+  patches:
+  - type: FromCompositeFieldPath
+    fromFieldPath: status.fqdn          # put there by a ToCompositeFieldPath patch on the MR
+    toFieldPath: stringData.host
+    policy: {fromFieldPath: Required}   # no secret until the host is real
 ```
 
-Remove that and every consumer silently loses its hostname. This is *why* Postgres needs a
-Composition rather than a bare managed resource. Same reasoning drives the Redis host/port/key
-projection.
+The contract each block delivers into the app's namespace:
+
+| Block | Secret | Keys | Written by |
+|-------|--------|------|------------|
+| Postgres | `<name>-postgres-conn` | `host`, `port`, `username`, `dbname` | composed |
+| Postgres | `<name>-admin-password` | `password` | the provider (`autoGeneratePassword: true`) |
+| Redis | `<name>-redis-conn` | `host`, `port` | composed |
+| Redis | `<name>-auth` | `attribute.*` incl. the access key | the provider |
+
+**Never mint or template a credential here.** Postgres uses `autoGeneratePassword: true` so the
+provider generates one into the secret we name; Redis's access key is sensitive, so upjet
+publishes it. This chart handles neither.
 
 ## Ordering
 
@@ -67,12 +83,27 @@ CRDs here are large. The ArgoCD `Application` syncing this repo **must** set
 ## Validate before you push
 
 ```sh
-make lint     # helm lint
-make test     # kubeconform
-make render   # crossplane render — offline, shows the MRs a Composition produces
+make all      # lint + render + test + verify
 ```
 
-`make render` costs nothing and catches most Composition mistakes. Use it.
+Each check has a blind spot, and knowing which is the point:
+
+| Target | Sees | Blind to |
+|--------|------|----------|
+| `lint` | chart syntax | everything semantic |
+| `render` | what a Composition produces, patches applied | CRD schemas — it never contacts a cluster |
+| `test` | the top-level objects, against live CRDs | anything inside a Composition's `base` |
+| `verify` | the **rendered** resources, against live CRDs | resources that need a second pass |
+
+**`make verify` is the one that catches a bad base.** `render` will happily emit a field that
+does not exist, and `test` treats a Composition's `base` as opaque — the two blockers found in
+review (a nonexistent `administratorPasswordSecretRef.namespace`, a nonexistent
+`FlexibleServerDatabase` `forProvider.name`) passed *both* cleanly. Only dry-running the
+rendered output caught them.
+
+Do not reach for `kubeconform` here. It carries no schemas for Crossplane types, so it skips
+every resource and reports success while validating nothing — worse than no check, because it
+looks like one.
 
 ## Traps worth knowing
 

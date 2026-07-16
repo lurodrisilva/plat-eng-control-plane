@@ -1,0 +1,26 @@
+{{- /*
+Per-cluster network facts, consumed by both Compositions via spec.environment.
+
+These IDs are outputs of plat-eng-aks-foundation. They are the difference between a private
+resource and a public one, so a missing value must never render — it would silently produce a
+FlexibleServer with no delegated subnet. Fail at template time instead.
+
+Regenerate with `make env-config ENV=<env>`; never hand-edit values-<env>.yaml.
+*/ -}}
+{{- $ec := .Values.environmentConfig -}}
+{{- range $k := list "postgresSubnetId" "postgresZoneId" "peSubnetId" "redisZoneId" }}
+  {{- if not (get $ec $k) }}
+    {{- fail (printf "environmentConfig.%s is empty. Run 'make env-config ENV=<env>' to regenerate values-<env>.yaml from terraform output; a missing network ID would compose a public resource." $k) }}
+  {{- end }}
+{{- end }}
+apiVersion: apiextensions.crossplane.io/v1beta1
+kind: EnvironmentConfig
+metadata:
+  name: {{ $ec.name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+data:
+  postgresSubnetId: {{ $ec.postgresSubnetId | quote }}
+  postgresZoneId: {{ $ec.postgresZoneId | quote }}
+  peSubnetId: {{ $ec.peSubnetId | quote }}
+  redisZoneId: {{ $ec.redisZoneId | quote }}
