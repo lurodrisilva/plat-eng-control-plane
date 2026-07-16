@@ -1,4 +1,4 @@
-.PHONY: help lint template render env-config test all
+.PHONY: help lint template render verify env-config test all
 
 CHART       ?= chart
 ENV         ?= aks-test
@@ -19,15 +19,47 @@ template: ## Render the chart to stdout
 ## Validates the TOP-LEVEL objects against the CRDs actually installed in the cluster.
 ##
 ## Know its blind spot: the managed resources inside a Composition's `input.resources[].base`
-## are opaque to the API server — it validates the Composition, not what the Composition would
-## create. A base with a nonexistent field passes here. `make render` plus a real XR is what
-## catches that.
+## are opaque to the API server — this validates the Composition, not what the Composition
+## would create. `make verify` closes that gap; run both.
 ##
 ## kubeconform is deliberately not used: it has no schemas for Crossplane types and reports
 ## every resource "Skipped", which reads like a pass while checking nothing.
 test: ## Server-side dry-run the rendered manifests against the live CRDs (needs cluster access)
 	@helm template control-plane $(CHART) --values $(VALUES) | \
 		kubectl apply --dry-run=server -f -
+
+## The check that actually catches a bad Composition.
+##
+## Neither `make test` nor `make render` can do this alone. `test` never sees inside a
+## Composition's base; `render` never contacts a cluster, so it cannot know a CRD's schema and
+## will happily emit a field that does not exist. Both blockers found in review (a nonexistent
+## administratorPasswordSecretRef.namespace, and a nonexistent FlexibleServerDatabase
+## forProvider.name) passed `test` AND `render` cleanly. Only dry-running the *rendered* output
+## catches them.
+##
+## Resources are dry-run in `default` with namespace/ownerRefs stripped: the XR's real namespace
+## need not exist, and nothing is created. Kinds whose provider is withheld (PrivateEndpoint,
+## see values.yaml providers.network) are reported as skipped rather than failed.
+XR_API := $(shell yq -r '.xrds.group' $(CHART)/values.yaml)/$(shell yq -r '.xrds.version' $(CHART)/values.yaml)
+
+verify: render ## Dry-run the RENDERED managed resources against live CRDs — catches bad bases
+	@rc=0; for f in $(RENDER_OUT)/*.rendered.yaml; do \
+		name=$$(basename $$f .rendered.yaml); \
+		echo "--- verify: $$name"; \
+		yq ea 'select(.apiVersion != "$(XR_API)") | del(.metadata.namespace) | del(.metadata.ownerReferences) | del(.metadata.generateName)' \
+			$$f > $(RENDER_OUT)/$$name.composed.yaml; \
+		yq ea '.kind' $(RENDER_OUT)/$$name.composed.yaml | grep -vE '^(---|null)$$' | sort -u > $(RENDER_OUT)/$$name.kinds; \
+		for kind in $$(cat $(RENDER_OUT)/$$name.kinds); do \
+			yq ea "select(.kind == \"$$kind\")" $(RENDER_OUT)/$$name.composed.yaml > $(RENDER_OUT)/$$name.$$kind.yaml; \
+			if out=$$(kubectl apply --dry-run=server -n default -f $(RENDER_OUT)/$$name.$$kind.yaml 2>&1); then \
+				echo "      OK   $$kind"; \
+			elif echo "$$out" | grep -q "no matches for kind"; then \
+				echo "      SKIP $$kind (provider withheld — see values.yaml providers.network)"; \
+			else \
+				echo "      FAIL $$kind"; echo "$$out" | sed 's/^/           /'; rc=1; \
+			fi; \
+		done; \
+	done; exit $$rc
 
 ## Offline Composition check: runs the real functions locally (via Docker) and prints the
 ## managed resources a Composition would actually create. This is the only local check that
@@ -94,4 +126,4 @@ env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	} > $(VALUES)
 	@echo "Wrote $(VALUES)"
 
-all: lint test render ## Run every local check
+all: lint render test verify ## Run every local check

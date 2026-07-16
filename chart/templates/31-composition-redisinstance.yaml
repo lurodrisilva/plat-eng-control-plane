@@ -20,10 +20,11 @@ Crossplane v2 removed composite-resource connection details, so the connection S
 composed here rather than projected (see the same note in the Postgres Composition). Two
 secrets land in the XR's namespace:
 
-  <name>-conn   host, port    (composed below)
-  <name>-auth   attribute.primaryAccessKey and friends, written by the provider from the
-                cache's own connection details — the access key is sensitive, so upjet
-                publishes it and this chart never handles it.
+  <name>-redis-conn  host, port  (composed below; engine in the name so it cannot collide
+                     with a same-named PostgresInstance's secret)
+  <name>-auth   the cache's own connection details, written by the provider: the access key
+                is sensitive, so upjet publishes it and this chart never handles it. Exact key
+                names are upjet's (`attribute.*`) and are unverified until a cache exists.
 */ -}}
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
@@ -163,7 +164,7 @@ spec:
           - type: string
             string:
               type: Format
-              fmt: "%s-conn"
+              fmt: "%s-redis-conn"
         - type: FromCompositeFieldPath
           fromFieldPath: status.hostname
           toFieldPath: stringData.host
@@ -172,6 +173,8 @@ spec:
         - type: FromCompositeFieldPath
           fromFieldPath: status.sslPort
           toFieldPath: stringData.port
+          policy:
+            fromFieldPath: Required
           transforms:
           - type: convert
             convert:

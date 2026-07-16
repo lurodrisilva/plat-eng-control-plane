@@ -1,6 +1,3 @@
-# Namespace holding Crossplane core and the Terraform-created Azure credentials Secret.
-namespace: resources-system
-
 # Upbound provider packages. Keep every azure-* provider on the same version as the family
 # provider — mixing versions within a family corrupts the Crossplane dependency graph.
 providers:

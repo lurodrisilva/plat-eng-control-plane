@@ -21,7 +21,7 @@ The Crossplane control plane for the Azure platform. Read this before changing a
    MR versions per service and they are not uniform across the family:
    ```sh
    kubectl get crds | grep azure.m.upbound.io
-   kubectl explain flexibleserver --api-version=dbforpostgresql.azure.m.upbound.io/v1beta2
+   kubectl explain flexibleserver --api-version=dbforpostgresql.azure.m.upbound.io/v1beta1
    ```
 
 ## The private-network constraint
@@ -60,9 +60,9 @@ The contract each block delivers into the app's namespace:
 
 | Block | Secret | Keys | Written by |
 |-------|--------|------|------------|
-| Postgres | `<name>-conn` | `host`, `port`, `username`, `dbname` | composed |
+| Postgres | `<name>-postgres-conn` | `host`, `port`, `username`, `dbname` | composed |
 | Postgres | `<name>-admin-password` | `password` | the provider (`autoGeneratePassword: true`) |
-| Redis | `<name>-conn` | `host`, `port` | composed |
+| Redis | `<name>-redis-conn` | `host`, `port` | composed |
 | Redis | `<name>-auth` | `attribute.*` incl. the access key | the provider |
 
 **Never mint or template a credential here.** Postgres uses `autoGeneratePassword: true` so the
@@ -83,16 +83,27 @@ CRDs here are large. The ArgoCD `Application` syncing this repo **must** set
 ## Validate before you push
 
 ```sh
-make lint     # helm lint — offline
-make render   # crossplane render — offline, shows the MRs a Composition produces
-make test     # server dry-run against live CRDs — creates nothing
+make all      # lint + render + test + verify
 ```
 
-`make render` costs nothing and catches most Composition mistakes. Use it.
+Each check has a blind spot, and knowing which is the point:
+
+| Target | Sees | Blind to |
+|--------|------|----------|
+| `lint` | chart syntax | everything semantic |
+| `render` | what a Composition produces, patches applied | CRD schemas — it never contacts a cluster |
+| `test` | the top-level objects, against live CRDs | anything inside a Composition's `base` |
+| `verify` | the **rendered** resources, against live CRDs | resources that need a second pass |
+
+**`make verify` is the one that catches a bad base.** `render` will happily emit a field that
+does not exist, and `test` treats a Composition's `base` as opaque — the two blockers found in
+review (a nonexistent `administratorPasswordSecretRef.namespace`, a nonexistent
+`FlexibleServerDatabase` `forProvider.name`) passed *both* cleanly. Only dry-running the
+rendered output caught them.
 
 Do not reach for `kubeconform` here. It carries no schemas for Crossplane types, so it skips
-every resource and reports success while validating nothing — which is worse than no check,
-because it looks like one. `make test` dry-runs against the CRDs actually installed.
+every resource and reports success while validating nothing — worse than no check, because it
+looks like one.
 
 ## Traps worth knowing
 
