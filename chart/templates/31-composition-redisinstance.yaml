@@ -66,8 +66,6 @@ spec:
               kind: ClusterProviderConfig
               name: {{ .Values.providerConfig.name }}
             forProvider:
-              location: {{ .Values.redis.location }}
-              resourceGroupName: {{ .Values.redis.resourceGroupName }}
               family: {{ .Values.redis.family }}
               skuName: {{ .Values.redis.skuName }}
               capacity: {{ .Values.redis.capacity }}
@@ -78,6 +76,14 @@ spec:
               nonSslPortEnabled: false
               minimumTlsVersion: "1.2"
         patches:
+        # Location and resource group are environment facts. The private endpoint below must
+        # land in the VNet's region, so a hardcoded region breaks the private path entirely.
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: location
+          toFieldPath: spec.forProvider.location
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: resourceGroupName
+          toFieldPath: spec.forProvider.resourceGroupName
         - type: FromCompositeFieldPath
           fromFieldPath: spec.version
           toFieldPath: spec.forProvider.redisVersion
@@ -121,8 +127,6 @@ spec:
               kind: ClusterProviderConfig
               name: {{ .Values.providerConfig.name }}
             forProvider:
-              location: {{ .Values.redis.location }}
-              resourceGroupName: {{ .Values.redis.resourceGroupName }}
               # Both are single objects, NOT lists — verified against the live CRD. The
               # terraform resource takes repeatable blocks, so the list form looks right and
               # is what upjet generates for some resources; here it is rejected outright:
@@ -135,6 +139,12 @@ spec:
               privateDnsZoneGroup:
                 name: redis
         patches:
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: location
+          toFieldPath: spec.forProvider.location
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: resourceGroupName
+          toFieldPath: spec.forProvider.resourceGroupName
         - type: FromEnvironmentFieldPath
           fromFieldPath: peSubnetId
           toFieldPath: spec.forProvider.subnetId
