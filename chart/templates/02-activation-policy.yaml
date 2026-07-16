@@ -27,4 +27,9 @@ spec:
 {{- range .Values.activationPolicy.activate }}
   - {{ . | quote }}
 {{- end }}
+{{- if .Values.redis.enabled }}
+{{- range .Values.activationPolicy.redisActivate }}
+  - {{ . | quote }}
+{{- end }}
+{{- end }}
 {{- end }}

@@ -9,6 +9,7 @@ There is deliberately no `version` field. The backing service is Azure Managed R
 pins the engine at Redis 7.4 and exposes no version knob (ADR-0019) — an enum the platform
 cannot honour is worse than no field at all.
 */ -}}
+{{- if .Values.redis.enabled }}
 apiVersion: apiextensions.crossplane.io/v2
 kind: CompositeResourceDefinition
 metadata:
@@ -56,3 +57,4 @@ spec:
                 type: string
                 description: Azure resource ID of the Redis instance. Bridges the instance to
                   its private endpoint, which cannot be patched from it directly.
+{{- end }}

@@ -46,6 +46,7 @@ secrets land in the XR's namespace:
   <name>-auth   the instance's own connection details, written by the provider: the access key
                 is sensitive, so upjet publishes it and this chart never handles it.
 */ -}}
+{{- if .Values.redis.enabled }}
 apiVersion: apiextensions.crossplane.io/v1
 kind: Composition
 metadata:
@@ -231,3 +232,4 @@ spec:
         # as soon as it exists, which for a Secret is the only meaningful definition.
         readinessChecks:
         - type: None
+{{- end }}
