@@ -81,18 +81,16 @@ xrds:
   group: platform.myorg.io
   version: v1alpha1
 
-# Azure resource defaults for composed resources. Overridable per environment.
+# Azure defaults for composed resources. location and resourceGroupName are deliberately
+# absent: they are environment facts and come from the EnvironmentConfig, because a server must
+# sit in the same region as the VNet it joins and a chart default cannot know that.
 postgres:
-  location: eastus
-  resourceGroupName: aks-test-rg
   version: "16"
   storageMb: 32768
   skuName: GP_Standard_D2s_v3
   administratorLogin: psqladmin
 
 redis:
-  location: eastus
-  resourceGroupName: aks-test-rg
   family: C
   skuName: Standard
   capacity: 1

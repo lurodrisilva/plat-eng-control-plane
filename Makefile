@@ -99,15 +99,21 @@ render: ## crossplane render each Composition against its example XR
 ## Outputs are read one at a time on purpose. `terraform output -json` with no name emits every
 ## output including generated SSH keys, whose raw control characters make the document
 ## unparseable by jq.
+##
+## The resource group is parsed out of the subnet ID: the foundation exposes no
+## resource_group_name output, and the ID is authoritative for the group the network
+## actually lives in — which is the group these resources must join.
 env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 	@command -v jq >/dev/null || { echo "jq is required"; exit 1; }
 	@test -d $(FOUNDATION) || { echo "foundation not found at $(FOUNDATION)"; exit 1; }
 	@echo "Reading terraform outputs from $(FOUNDATION) ..."
-	@pg_subnet=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_subnet_id 2>/dev/null); \
+	@location=$$(cd $(FOUNDATION) && terraform output -raw location 2>/dev/null); \
+	pg_subnet=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_subnet_id 2>/dev/null); \
 	pg_zone=$$(cd $(FOUNDATION) && terraform output -raw postgres_flexibleserver_private_dns_zone_id 2>/dev/null); \
 	pe_subnet=$$(cd $(FOUNDATION) && terraform output -raw private_endpoints_subnet_id 2>/dev/null); \
 	redis_zone=$$(cd $(FOUNDATION) && terraform output -json private_dns_zone_ids 2>/dev/null | jq -r '.["privatelink.redis.cache.windows.net"] // empty'); \
-	for v in pg_subnet pg_zone pe_subnet redis_zone; do \
+	rg=$$(echo "$$pg_subnet" | sed -n 's|.*/resourceGroups/\([^/]*\)/.*|\1|p'); \
+	for v in location pg_subnet pg_zone pe_subnet redis_zone rg; do \
 		eval "val=\$$$$v"; \
 		[ -n "$$val" ] || { echo "ERROR: terraform output for $$v is empty — has 'terraform apply' run in $(FOUNDATION)?"; exit 1; }; \
 	done; \
@@ -119,6 +125,8 @@ env-config: ## Regenerate chart/values-$(ENV).yaml from terraform output
 		echo "# never reaches Ready."; \
 		echo ""; \
 		echo "environmentConfig:"; \
+		echo "  location: $$location"; \
+		echo "  resourceGroupName: $$rg"; \
 		echo "  postgresSubnetId: $$pg_subnet"; \
 		echo "  postgresZoneId: $$pg_zone"; \
 		echo "  peSubnetId: $$pe_subnet"; \

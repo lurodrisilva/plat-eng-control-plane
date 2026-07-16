@@ -8,9 +8,9 @@ FlexibleServer with no delegated subnet. Fail at template time instead.
 Regenerate with `make env-config ENV=<env>`; never hand-edit values-<env>.yaml.
 */ -}}
 {{- $ec := .Values.environmentConfig -}}
-{{- range $k := list "postgresSubnetId" "postgresZoneId" "peSubnetId" "redisZoneId" }}
+{{- range $k := list "location" "resourceGroupName" "postgresSubnetId" "postgresZoneId" "peSubnetId" "redisZoneId" }}
   {{- if not (get $ec $k) }}
-    {{- fail (printf "environmentConfig.%s is empty. Run 'make env-config ENV=<env>' to regenerate values-<env>.yaml from terraform output; a missing network ID would compose a public resource." $k) }}
+    {{- fail (printf "environmentConfig.%s is empty. Run 'make env-config ENV=<env>' to regenerate values-<env>.yaml from terraform output; a missing network fact would compose a public or cross-region resource." $k) }}
   {{- end }}
 {{- end }}
 apiVersion: apiextensions.crossplane.io/v1beta1
@@ -20,6 +20,13 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "1"
 data:
+  # Azure rejects a server whose VNet lives in another region:
+  #   "The virtual network aks-vnet coming from a different location westus2 is currently not
+  #    supported, expected location eastus."
+  # Location is an environment fact, not a chart default — a hardcoded one is wrong the moment
+  # the foundation moves region.
+  location: {{ $ec.location | quote }}
+  resourceGroupName: {{ $ec.resourceGroupName | quote }}
   postgresSubnetId: {{ $ec.postgresSubnetId | quote }}
   postgresZoneId: {{ $ec.postgresZoneId | quote }}
   peSubnetId: {{ $ec.peSubnetId | quote }}

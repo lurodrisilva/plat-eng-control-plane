@@ -74,8 +74,6 @@ spec:
               kind: ClusterProviderConfig
               name: {{ .Values.providerConfig.name }}
             forProvider:
-              location: {{ .Values.postgres.location }}
-              resourceGroupName: {{ .Values.postgres.resourceGroupName }}
               administratorLogin: {{ .Values.postgres.administratorLogin }}
               version: {{ .Values.postgres.version | quote }}
               storageMb: {{ .Values.postgres.storageMb }}
@@ -90,7 +88,15 @@ spec:
               # Private-only. The XR has no field that can flip this.
               publicNetworkAccessEnabled: false
         patches:
-        # Network facts come from the EnvironmentConfig, never from the app.
+        # Network facts come from the EnvironmentConfig, never from the app. Location included:
+        # a FlexibleServer must sit in the same region as the VNet it is injected into, and
+        # Azure rejects the mismatch outright.
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: location
+          toFieldPath: spec.forProvider.location
+        - type: FromEnvironmentFieldPath
+          fromFieldPath: resourceGroupName
+          toFieldPath: spec.forProvider.resourceGroupName
         - type: FromEnvironmentFieldPath
           fromFieldPath: postgresSubnetId
           toFieldPath: spec.forProvider.delegatedSubnetId
