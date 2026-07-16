@@ -5,14 +5,13 @@ Unlike Flexible Server, Redis cannot be VNet-injected on Standard tier, so priva
 from two resources: the cache with public access off, plus a PrivateEndpoint in the
 private-endpoints subnet with a zone group registering it in privatelink.redis.cache.windows.net.
 
-VERIFICATION STATUS (2026-07-16):
-  - RedisCache      cache.azure.m.upbound.io/v1beta1   VERIFIED against live CRDs on aks-test.
-  - PrivateEndpoint network.azure.m.upbound.io/v1beta1 NOT VERIFIED. provider-azure-network is
-    withheld (values.yaml providers.network) until the wildcard activation policy is gone —
-    activating its ~238 MRDs took the Free-tier API server offline on 2026-07-16. Re-check this
-    resource's apiVersion and fields with `kubectl explain` once the provider is installed.
-    Until then a RedisInstance composes a cache with public access off and NO private endpoint:
-    unreachable, and still billing.
+Both resources are VERIFIED against the live CRDs on aks-test (2026-07-16):
+  - RedisCache      cache.azure.m.upbound.io/v1beta1
+  - PrivateEndpoint network.azure.m.upbound.io/v1beta1
+
+provider-azure-network is now installable because Safe Start is in force: the wildcard
+activation policy is gone, so it registers ONE CRD (privateendpoints) instead of ~238 and no
+longer takes the Free-tier API server offline.
 
 ## How the app gets its credentials
 
@@ -124,30 +123,34 @@ spec:
             forProvider:
               location: {{ .Values.redis.location }}
               resourceGroupName: {{ .Values.redis.resourceGroupName }}
+              # Both are single objects, NOT lists — verified against the live CRD. The
+              # terraform resource takes repeatable blocks, so the list form looks right and
+              # is what upjet generates for some resources; here it is rejected outright:
+              #   unknown field "spec.forProvider.privateServiceConnection[0].name"
               privateServiceConnection:
-              - name: redis
+                name: redis
                 isManualConnection: false
                 subresourceNames:
                 - redisCache
               privateDnsZoneGroup:
-              - name: redis
+                name: redis
         patches:
         - type: FromEnvironmentFieldPath
           fromFieldPath: peSubnetId
           toFieldPath: spec.forProvider.subnetId
         - type: FromEnvironmentFieldPath
           fromFieldPath: redisZoneId
-          toFieldPath: spec.forProvider.privateDnsZoneGroup[0].privateDnsZoneIds[0]
+          toFieldPath: spec.forProvider.privateDnsZoneGroup.privateDnsZoneIds[0]
         # Hop 2 of 2: bind the endpoint to the cache created above. Required, so the endpoint
         # is skipped until the cache's id exists — it renders on the second reconcile.
         - type: FromCompositeFieldPath
           fromFieldPath: status.cacheId
-          toFieldPath: spec.forProvider.privateServiceConnection[0].privateConnectionResourceId
+          toFieldPath: spec.forProvider.privateServiceConnection.privateConnectionResourceId
           policy:
             fromFieldPath: Required
         - type: FromCompositeFieldPath
           fromFieldPath: metadata.name
-          toFieldPath: spec.forProvider.privateServiceConnection[0].name
+          toFieldPath: spec.forProvider.privateServiceConnection.name
 
       # The connection contract. Composed rather than projected, because v2 has no XR
       # connection details. Required on status.hostname, so it never appears with an empty host.

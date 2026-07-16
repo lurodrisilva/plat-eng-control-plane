@@ -19,7 +19,7 @@ providers:
   #
   # Until then the Redis PrivateEndpoint cannot be created, so a RedisInstance yields a cache
   # with no private path. That failure is loud (the XR never goes Ready), unlike the outage.
-  network: false
+  network: true
 
 # Composition functions. Crossplane v2 removed `mode: Resources`, so a Composition cannot
 # render anything without a Function package installed.

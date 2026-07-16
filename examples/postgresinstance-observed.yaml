@@ -1,0 +1,21 @@
+# Same XR as postgresinstance.yaml, but with the status a real server would report.
+#
+# Resources gated `Required` on status (the composed connection Secret, and Redis's
+# PrivateEndpoint) do not render on the first reconcile — so a first-pass render alone leaves
+# them unchecked. `make verify` renders this too, which is what puts those resources in front
+# of the API server. The PrivateEndpoint's list-vs-object schema bug was found exactly here.
+#
+# Values are representative, not real; nothing here is applied.
+apiVersion: platform.myorg.io/v1alpha1
+kind: PostgresInstance
+metadata:
+  name: orders-db
+  namespace: team-orders
+spec:
+  size: small
+  version: "16"
+  storageMb: 32768
+  databaseName: orders
+status:
+  fqdn: orders-db-example.privatelink.postgres.database.azure.com
+  serverId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/aks-test-rg/providers/Microsoft.DBforPostgreSQL/flexibleServers/orders-db-example
